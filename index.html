@@ -7,6 +7,8 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Show Time">
+<link rel="apple-touch-icon" href="icon-180.png">
 <title>Show Time</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%230C0D11'/><path d='M30 35h40M50 35v35' stroke='%2337D3A6' stroke-width='9' stroke-linecap='round'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -232,6 +234,15 @@ a{color:var(--mint)}
 
 .nextchip{display:block;margin:12px 18px 0;width:calc(100% - 36px);text-align:left;font:700 13px var(--body);color:var(--mint);background:var(--mint-dim);border:1.5px solid var(--mint-line);border-radius:12px;padding:11px 14px}
 .nextchip:active{opacity:.8}
+
+.chip i{font-style:normal;opacity:.55;font-weight:800;margin-left:2px}
+/* rangées horizontales Découvrir */
+.hrow{display:flex;gap:11px;overflow-x:auto;padding:2px 2px 14px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.hrow::-webkit-scrollbar{display:none}
+.hcard{flex:none;width:98px}
+.hcard img{width:98px;aspect-ratio:2/3;border-radius:11px;object-fit:cover;background:var(--card2);border:1px solid var(--line)}
+.hcard .hnm{font:600 11px var(--body);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--tx2)}
+.hcard .hvt{font:700 10.5px var(--body);color:var(--mint);margin-top:1px}
 </style>
 </head>
 <body>
@@ -290,6 +301,7 @@ a{color:var(--mint)}
   <div class="pagehead"><h1>Bibliothèque</h1></div>
   <div class="chips" id="libchips">
     <button class="chip on" data-f="progress">En cours</button>
+    <button class="chip" data-f="unstarted">À commencer</button>
     <button class="chip" data-f="uptodate">À jour</button>
     <button class="chip" data-f="later">Plus tard</button>
     <button class="chip" data-f="done">Terminées</button>
@@ -574,7 +586,7 @@ async function refreshShow(id) {
   const meta = await tmdb('/tv/' + id);
   const old = db.shows[id];
   const fresh = newShow(meta);
-  if (old) Object.assign(fresh, { watched: old.watched, followed: old.followed, archived: old.archived, later: old.later });
+  if (old) Object.assign(fresh, { watched: old.watched, rewatch: old.rewatch, followed: old.followed, archived: old.archived, later: old.later, noWidget: old.noWidget, prov: old.prov, provAt: old.provAt });
   db.shows[id] = fresh;
   sanitizeShow(fresh);
   // purge cache saisons de cette série (episode counts peuvent bouger)
@@ -802,6 +814,7 @@ function renderLib() {
   const shows = Object.values(db.shows), movies = Object.values(db.movies);
   const by = {
     progress: () => shows.filter(s => s.followed && !s.archived && !isUpToDate(s) && !s.later && watchedCount(s) > 0),
+    unstarted:() => shows.filter(s => s.followed && !s.archived && !s.later && watchedCount(s) === 0),
     uptodate: () => shows.filter(s => s.followed && !s.archived && isUpToDate(s) && !isEnded(s)),
     later:    () => [...shows.filter(s => s.later && !s.archived), ...movies.filter(m => m.later && !m.watched)],
     done:     () => shows.filter(s => !s.archived && isEnded(s) && isUpToDate(s)),
@@ -809,6 +822,12 @@ function renderLib() {
     archived: () => shows.filter(s => s.archived),
     all:      () => [...shows, ...movies],
   };
+  // compteurs sur les puces
+  const labels = { progress: 'En cours', unstarted: 'À commencer', uptodate: 'À jour', later: 'Plus tard', done: 'Terminées', movies: 'Films', archived: 'Archivées', all: 'Tout' };
+  document.querySelectorAll('#libchips .chip').forEach(c => {
+    const f = c.dataset.f;
+    if (by[f]) c.innerHTML = `${labels[f]} <i>${by[f]().length}</i>`;
+  });
   items = (by[libFilter] || by.all)();
   if (libFilter === 'progress') {
     const lastAct = (s) => { const d = Object.values(s.watched || {}); return d.length ? Math.max(...d.map(x => +new Date(x))) : 0; };
@@ -832,9 +851,50 @@ function renderLib() {
 /* ---------- rendu : recherche ---------- */
 let qTimer;
 $('#q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(doSearch, 350); });
+
+let discoverCache = null;
+async function renderDiscover() {
+  const box = $('#search-body');
+  if (!discoverCache) {
+    box.innerHTML = '<div class="empty">Chargement des suggestions…</div>';
+    try {
+      const [top, trend, gems, topm] = await Promise.all([
+        tmdb('/tv/top_rated'),
+        tmdb('/trending/tv/week'),
+        tmdb('/discover/tv', { 'vote_count.gte': 200, 'vote_count.lte': 2500, sort_by: 'vote_average.desc' }),
+        tmdb('/movie/top_rated'),
+      ]);
+      discoverCache = [
+        ['Séries les mieux notées', top.results, 'tv'],
+        ['Tendances de la semaine', trend.results, 'tv'],
+        ['Pépites de niche bien notées', gems.results, 'tv'],
+        ['Films les mieux notés', topm.results, 'movie'],
+      ];
+    } catch { box.innerHTML = '<div class="empty"><b>Erreur réseau</b>Impossible de charger les suggestions.</div>'; return; }
+  }
+  if ($('#q').value.trim().length >= 2) return; // l'utilisateur a commencé une recherche entre-temps
+  box.innerHTML = '';
+  for (const [title, items, kind] of discoverCache) {
+    box.append(el(`<div class="section-t"><span class="dot"></span>${title}</div>`));
+    const row = el('<div class="hrow"></div>');
+    for (const x of (items || []).slice(0, 12)) {
+      const name = kind === 'tv' ? x.name : x.title;
+      const inLib = kind === 'tv' ? !!db.shows[x.id] : !!db.movies[x.id];
+      const card = el(`<div class="hcard">
+        <img loading="lazy" src="${poster(x.poster_path, 'w185')}">
+        <div class="hnm">${esc(name)}</div>
+        <div class="hvt">★ ${x.vote_average ? x.vote_average.toFixed(1) : '—'}${inLib ? ' · ✓' : ''}</div>
+      </div>`);
+      card.onclick = () => openPreview({ ...x, media_type: kind });
+      row.append(card);
+    }
+    box.append(row);
+  }
+}
+
 async function doSearch() {
   const q = $('#q').value.trim(), box = $('#search-body');
-  if (q.length < 2) return;
+  if (q.length < 2) { renderDiscover(); return; }
   box.innerHTML = '<div class="empty">Recherche…</div>';
   try {
     const r = await tmdb('/search/multi', { query: q });
@@ -906,7 +966,7 @@ async function openDetail(id) {
   const sh = db.shows[id]; if (!sh) return;
   renderShowDetail(sh, d);
 }
-function closeDetail() { $('#detail').classList.remove('on'); }
+function closeDetail() { $('#detail').classList.remove('on'); render(); }
 window.addEventListener('popstate', () => {
   const sheet = $('#epsheet');
   if (sheet.classList.contains('on')) {
@@ -1317,6 +1377,7 @@ function render() {
   if (cur === 's-agenda') renderAgenda();
   if (cur === 's-lib') renderLib();
   if (cur === 's-settings') renderSettings();
+  if (cur === 's-search') { if ($('#q').value.trim().length < 2) renderDiscover(); else doSearch(); }
 }
 
 /* ---------- setup ---------- */
